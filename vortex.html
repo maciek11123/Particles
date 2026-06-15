@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Silk Vortex</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, cx, cy, scale;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2; cy = H / 2;
+  scale = Math.min(W, H) / 800;
+}
+resize();
+window.addEventListener('resize', () => { resize(); initParticles(); });
+
+// ── TORUS CONFIG ──────────────────────────────────
+const TORII = [
+  { R: 200, r: 38, count: 1800, speed:  0.00130, tiltX: 0.55, tiltY: 0.20, alpha: 0.82 },
+  { R: 160, r: 28, count: 1400, speed: -0.00110, tiltX: 0.30, tiltY: 0.60, alpha: 0.75 },
+  { R: 240, r: 45, count: 2000, speed:  0.00090, tiltX: 0.70, tiltY: 0.10, alpha: 0.70 },
+  { R: 130, r: 22, count: 1000, speed: -0.00150, tiltX: 0.15, tiltY: 0.80, alpha: 0.65 },
+  { R: 280, r: 55, count: 1600, speed:  0.00070, tiltX: 0.85, tiltY: 0.35, alpha: 0.60 },
+  { R: 100, r: 18, count:  800, speed:  0.00180, tiltX: 0.50, tiltY: 0.90, alpha: 0.55 },
+];
+
+// Precession rates (global slow tumble)
+let preX = 0, preY = 0, preZ = 0;
+const PREX_SPD = 0.00032, PREY_SPD = 0.00024, PREZ_SPD = 0.00016;
+
+// Particles array: each = { ti, theta, phi, dTheta, dPhi, brightness, segLen }
+let particles = [];
+
+function initParticles() {
+  particles = [];
+  TORII.forEach((t, ti) => {
+    for (let i = 0; i < t.count; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi   = Math.random() * Math.PI * 2;
+      // Concentrate near phi ≈ 0 for ribbon-like density variation
+      const bias  = Math.pow(Math.random(), 0.6) * Math.PI * 2;
+      particles.push({
+        ti,
+        theta: theta,
+        phi:   bias,
+        dTheta: t.speed * (0.85 + Math.random() * 0.30),
+        dPhi:   t.speed * 0.18 * (Math.random() - 0.5),
+        brightness: 0.55 + Math.random() * 0.45,
+        segLen: (3 + Math.random() * 6) * scale,
+        isStar: Math.random() < 0.04,
+        starSize: (0.8 + Math.random() * 1.2) * scale,
+        twinkle: Math.random() * Math.PI * 2,
+      });
+    }
+  });
+}
+initParticles();
+
+// 3D rotation matrices (pre-computed per frame)
+let mat = new Float64Array(9);
+
+function buildMatrix(rx, ry, rz) {
+  const cx2=Math.cos(rx), sx=Math.sin(rx);
+  const cy2=Math.cos(ry), sy=Math.sin(ry);
+  const cz=Math.cos(rz), sz=Math.sin(rz);
+  // Ry * Rx * Rz
+  mat[0]=cy2*cz+sy*sx*sz;  mat[1]=-cy2*sz+sy*sx*cz;  mat[2]=sy*cx2;
+  mat[3]=cx2*sz;            mat[4]=cx2*cz;             mat[5]=-sx;
+  mat[6]=-sy*cz+cy2*sx*sz; mat[7]=sy*sz+cy2*sx*cz;   mat[8]=cy2*cx2;
+}
+
+function project(x3, y3, z3) {
+  const xr = mat[0]*x3 + mat[1]*y3 + mat[2]*z3;
+  const yr = mat[3]*x3 + mat[4]*y3 + mat[5]*z3;
+  const zr = mat[6]*x3 + mat[7]*y3 + mat[8]*z3;
+  const fov = 900 * scale;
+  const d   = fov / (fov + zr);
+  return { x: xr * d, y: yr * d, z: zr, d };
+}
+
+// Per-torus tilt matrices (pre-computed once)
+const TMATS = TORII.map(t => {
+  const m = new Float64Array(9);
+  const rx = t.tiltX * Math.PI * 0.5;
+  const ry = t.tiltY * Math.PI * 0.5;
+  const cxv=Math.cos(rx), sxv=Math.sin(rx);
+  const cy2=Math.cos(ry), sy=Math.sin(ry);
+  m[0]=cy2;   m[1]=sy*sxv;  m[2]=sy*cxv;
+  m[3]=0;     m[4]=cxv;     m[5]=-sxv;
+  m[6]=-sy;   m[7]=cy2*sxv; m[8]=cy2*cxv;
+  return m;
+});
+
+function torusPoint(ti, theta, phi) {
+  const t = TORII[ti];
+  const m = TMATS[ti];
+  const cosT = Math.cos(theta), sinT = Math.sin(theta);
+  const cosP = Math.cos(phi),   sinP = Math.sin(phi);
+  const rx = (t.R + t.r * cosP) * cosT;
+  const ry = (t.R + t.r * cosP) * sinT;
+  const rz = t.r * sinP;
+  // Apply tilt
+  return {
+    x: m[0]*rx + m[1]*ry + m[2]*rz,
+    y: m[3]*rx + m[4]*ry + m[5]*rz,
+    z: m[6]*rx + m[7]*ry + m[8]*rz,
+  };
+}
+
+function torusTangent(ti, theta, phi) {
+  const t = TORII[ti];
+  const m = TMATS[ti];
+  const cosT = Math.cos(theta), sinT = Math.sin(theta);
+  const cosP = Math.cos(phi);
+  const rho = t.R + t.r * cosP;
+  // dPos/dTheta (tangent along ring)
+  const dx = -rho * sinT;
+  const dy =  rho * cosT;
+  const dz =  0;
+  const tx = m[0]*dx + m[1]*dy + m[2]*dz;
+  const ty = m[3]*dx + m[4]*dy + m[5]*dz;
+  const tz = m[6]*dx + m[7]*dy + m[8]*dz;
+  const len = Math.sqrt(tx*tx + ty*ty + tz*tz) || 1;
+  return { x: tx/len, y: ty/len, z: tz/len };
+}
+
+// Radial void mask
+function drawVoid() {
+  const r = 60 * scale;
+  const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+  grad.addColorStop(0,   'rgba(0,0,0,1)');
+  grad.addColorStop(0.6, 'rgba(0,0,0,0.85)');
+  grad.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.fillStyle = grad;
+  ctx.fillRect(-r, -r, r*2, r*2);
+  ctx.restore();
+}
+
+let frame = 0;
+const FADE = 0.038;
+
+function draw() {
+  frame++;
+
+  // Trail fade
+  ctx.fillStyle = `rgba(0,0,0,${FADE})`;
+  ctx.fillRect(0, 0, W, H);
+
+  // Update precession
+  preX += PREX_SPD;
+  preY += PREY_SPD;
+  preZ += PREZ_SPD;
+  buildMatrix(preX, preY, preZ);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    const ti = p.ti;
+    const tor = TORII[ti];
+
+    p.theta += p.dTheta;
+    p.phi   += p.dPhi;
+
+    // World position
+    const wp = torusPoint(ti, p.theta, p.phi);
+    const pr = project(wp.x * scale, wp.y * scale, wp.z * scale);
+
+    // Depth cueing
+    const depth = 0.45 + (pr.d - 0.5) * 1.1;
+
+    // Tangent in 3D → project delta
+    const wt = torusTangent(ti, p.theta, p.phi);
+    const half = p.segLen * 0.5;
+    const p1 = project(
+      (wp.x + wt.x * 0.5) * scale,
+      (wp.y + wt.y * 0.5) * scale,
+      (wp.z + wt.z * 0.5) * scale
+    );
+    const p0 = project(
+      (wp.x - wt.x * 0.5) * scale,
+      (wp.y - wt.y * 0.5) * scale,
+      (wp.z - wt.z * 0.5) * scale
+    );
+
+    const tnx = p1.x - p0.x;
+    const tny = p1.y - p0.y;
+    const tl  = Math.sqrt(tnx*tnx + tny*tny) || 1;
+
+    const alpha = Math.min(1, tor.alpha * p.brightness * depth);
+
+    // Warm-white tint: inner torii slightly warmer
+    const inner = ti === 3 || ti === 5 ? 1 : (ti === 1 ? 0.6 : 0.2);
+    const rC = Math.round(215 + inner * 40);
+    const gC = Math.round(210 + inner * 25);
+    const bC = Math.round(220 - inner * 30);
+
+    ctx.globalAlpha = alpha;
+
+    if (p.isStar) {
+      p.twinkle += 0.04;
+      const tw = 0.4 + 0.6 * Math.abs(Math.sin(p.twinkle));
+      ctx.fillStyle = `rgb(${rC},${gC},${bC})`;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, p.starSize * tw, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const nx = (tnx / tl) * half;
+      const ny = (tny / tl) * half;
+      ctx.strokeStyle = `rgb(${rC},${gC},${bC})`;
+      ctx.lineWidth = 0.9 * scale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pr.x - nx, pr.y - ny);
+      ctx.lineTo(pr.x + nx, pr.y + ny);
+      ctx.stroke();
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  drawVoid();
+  requestAnimationFrame(draw);
+}
+
+// Black start
+ctx.fillStyle = '#000';
+ctx.fillRect(0, 0, W, H);
+
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
