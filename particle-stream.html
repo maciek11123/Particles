@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Particle Stream</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; touch-action: none; }
+  canvas { display: block; }
+
+  #ui {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    align-items: center;
+    max-width: 96vw;
+  }
+
+  .mode-btn {
+    background: rgba(0, 180, 255, 0.07);
+    border: 1px solid rgba(0, 180, 255, 0.25);
+    color: rgba(0, 200, 255, 0.55);
+    font: 11px/1 system-ui, sans-serif;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  .mode-btn:hover {
+    background: rgba(0, 180, 255, 0.15);
+    color: rgba(0, 220, 255, 0.9);
+    border-color: rgba(0, 200, 255, 0.5);
+  }
+
+  .mode-btn.active {
+    background: rgba(0, 180, 255, 0.22);
+    border-color: rgba(0, 220, 255, 0.8);
+    color: #00eeff;
+    box-shadow: 0 0 14px rgba(0, 200, 255, 0.3);
+  }
+
+  #hint {
+    position: absolute;
+    top: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(80, 220, 255, 0.3);
+    font: 12px/1 system-ui, sans-serif;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    pointer-events: none;
+    transition: opacity 1.5s;
+  }
+
+  .res-divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(0, 180, 255, 0.2);
+    margin: 0 4px;
+  }
+
+  .res-btn {
+    background: rgba(0, 180, 255, 0.07);
+    border: 1px solid rgba(0, 180, 255, 0.25);
+    color: rgba(0, 200, 255, 0.55);
+    font: 10px/1 system-ui, sans-serif;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    padding: 7px 11px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  .res-btn:hover {
+    background: rgba(0, 180, 255, 0.15);
+    color: rgba(0, 220, 255, 0.9);
+    border-color: rgba(0, 200, 255, 0.5);
+  }
+
+  .res-btn.active {
+    background: rgba(0, 255, 180, 0.12);
+    border-color: rgba(0, 255, 180, 0.6);
+    color: #00ffbb;
+    box-shadow: 0 0 10px rgba(0, 255, 180, 0.2);
+  }
+
+
+</style>
+</head>
+<body>
+<div id="hint">touch the field</div>
+<div id="ui">
+  <button class="mode-btn active" data-mode="explosion">Explosion</button>
+  <button class="mode-btn" data-mode="gravity">Gravity</button>
+  <button class="mode-btn" data-mode="ripple">Ripple</button>
+  <div class="res-divider"></div>
+  <button class="res-btn" data-res="low">Lo</button>
+  <button class="res-btn active" data-res="med">Med</button>
+  <button class="res-btn" data-res="high">Hi</button>
+
+
+</div>
+
+<script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js';
+import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
+
+// ── Config ─────────────────────────────────────────────────────────────────
+const RES_PRESETS = { low: 40000, med: 130000, high: 260000 };
+let currentRes = 'med';
+let PARTICLE_COUNT = RES_PRESETS[currentRes];
+const STREAM_DEPTH   = 2000;
+const SPEED_BASE     = 1.8;
+const AFFECT_RADIUS  = 0.30;   // fraction of screen width
+const RETURN_FORCE   = 0.022;
+const DAMPING        = 0.87;
+
+// ── Mode ───────────────────────────────────────────────────────────────────
+let currentMode = 'explosion';
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentMode = btn.dataset.mode;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// ── Resolution toggle ───────────────────────────────────────────────────────
+document.querySelectorAll('.res-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const newRes = btn.dataset.res;
+    if (newRes === currentRes) return;
+    currentRes = newRes;
+    document.querySelectorAll('.res-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    rebuildParticles(RES_PRESETS[newRes]);
+  });
+});
+
+// ── Colors ─────────────────────────────────────────────────────────────────
+function idleColor() {
+  const v = 0.08 + Math.random() * 0.05;
+  return [v * 0.02, v * 0.05, v]; // very dark deep blue
+}
+function reactiveColor() {
+  const palette = [
+    [0.55, 0.0, 1.0],  // bright purple
+    [0.35, 0.0, 0.7],  // deep purple
+    [0.7,  0.0, 0.15], // deep red
+  ];
+  return palette[Math.floor(Math.random() * palette.length)];
+}
+
+// ── Scene ──────────────────────────────────────────────────────────────────
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, STREAM_DEPTH*2);
+camera.position.z = 0;
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const composer       = new EffectComposer(renderer);
+const afterimagePass = new AfterimagePass(0.87);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(afterimagePass);
+
+// ── Buffers (declared at module scope, allocated dynamically) ───────────────
+let positions, colors, velX, velY, baseX, baseY, ripplePhase, heat;
+let iR, iG, iB, rR, rG, rB;
+
+function allocateBuffers(count) {
+  positions   = new Float32Array(count * 3);
+  colors      = new Float32Array(count * 4);
+  velX        = new Float32Array(count);
+  velY        = new Float32Array(count);
+  baseX       = new Float32Array(count);
+  baseY       = new Float32Array(count);
+  ripplePhase = new Float32Array(count);
+  heat        = new Float32Array(count);
+  iR = new Float32Array(count); iG = new Float32Array(count); iB = new Float32Array(count);
+  rR = new Float32Array(count); rG = new Float32Array(count); rB = new Float32Array(count);
+}
+
+allocateBuffers(PARTICLE_COUNT);
+
+function visibleSize() {
+  const vFOV = camera.fov * Math.PI / 180;
+  const h    = 2 * Math.tan(vFOV / 2) * (STREAM_DEPTH / 2);
+  return { w: h * camera.aspect, h };
+}
+
+function initParticles() {
+  const vs = visibleSize();
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const bx = Math.random() - 0.5;
+    const by = Math.random() - 0.5;
+    baseX[i] = bx; baseY[i] = by;
+    positions[i*3]   = bx * vs.w;
+    positions[i*3+1] = by * vs.h;
+    positions[i*3+2] = -Math.random() * STREAM_DEPTH;
+    velX[i] = 0; velY[i] = 0;
+    ripplePhase[i] = Math.random() * Math.PI * 2;
+
+    heat[i] = 0;
+    const br  = 1.0; // idle: NormalBlending, brightness controlled in idleColor()
+    const br2 = 0.6   + Math.random() * 0.4;   // reactive: full sat, NormalBlending
+    const [ir,ig,ib] = idleColor();
+    iR[i] = ir*br; iG[i] = ig*br; iB[i] = ib*br;
+    const [rr,rg,rb] = reactiveColor();
+    rR[i] = rr*br2; rG[i] = rg*br2; rB[i] = rb*br2;
+    colors[i*4]   = iR[i];
+    colors[i*4+1] = iG[i];
+    colors[i*4+2] = iB[i];
+    colors[i*4+3] = 0;
+  }
+}
+
+const geometry = new THREE.BufferGeometry();
+geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute('color',    new THREE.BufferAttribute(colors,    4));
+
+const material = new THREE.PointsMaterial({
+  size: 0.7, vertexColors: true, transparent: true, opacity: 1.0,
+  blending: THREE.NormalBlending, depthWrite: false, sizeAttenuation: false,
+});
+let points = new THREE.Points(geometry, material);
+scene.add(points);
+initParticles();
+
+function rebuildParticles(count) {
+  PARTICLE_COUNT = count;
+  allocateBuffers(count);
+
+  // Dispose old geometry and rebuild
+  geometry.dispose();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color',    new THREE.BufferAttribute(colors,    4));
+  geometry.setDrawRange(0, count);
+
+  initParticles();
+  startupFade = 0; // smooth fade-in on switch
+}
+
+// ── Ripple state ───────────────────────────────────────────────────────────
+// Each ripple: { nx, ny, t (time since trigger, frames) }
+const ripples = [];
+const RIPPLE_SPEED  = 0.018; // world-fraction per frame
+const RIPPLE_FORCE  = 5.0;
+const RIPPLE_WIDTH  = 0.06;  // ring thickness (fraction of screen)
+const RIPPLE_LIFE   = 120;   // frames until gone
+
+// Gravity well state
+const gravityWells = []; // { nx, ny, frames, burst }
+const GRAVITY_PULL       = 1.2;    // XY convergence pull
+const GRAVITY_SPIRAL     = 0.15;   // very mild spin, mostly tunnel
+const GRAVITY_BURST      = 45.0;   // shockwave
+const GRAVITY_CHARGE     = 90;     // build-up frames
+const GRAVITY_BURST_LIFE = 50;     // frames burst lasts
+const GRAVITY_Z_PULL     = 6.0;    // how fast particles rush toward camera
+const GRAVITY_TUNNEL_R   = 0.85;   // fraction of screen half-width to start pulling
+
+// ── Audio ──────────────────────────────────────────────────────────────────
+// Space audio: soft shimmer tones on touch
+let audioCtx = null;
+let masterGain = null;
+let reverbSend = null;
+let activeVoices = new Map(); // pointerId → nodes
+
+function makeReverb(ctx, secs = 4.5, decay = 3.0) {
+  const conv = ctx.createConvolver();
+  const len  = ctx.sampleRate * secs;
+  const buf  = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++)
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+  }
+  conv.buffer = buf;
+  return conv;
+}
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const ctx = audioCtx;
+
+  masterGain = ctx.createGain();
+  masterGain.gain.setValueAtTime(0.22, ctx.currentTime);
+  masterGain.connect(ctx.destination);
+
+  // Long lush reverb
+  const reverb = makeReverb(ctx, 5.0, 2.8);
+  const revGain = ctx.createGain();
+  revGain.gain.setValueAtTime(0.55, ctx.currentTime);
+  reverb.connect(revGain);
+  revGain.connect(ctx.destination);
+  reverbSend = reverb;
+}
+
+// Touch sounds: 6 shimmer/space sounds, one picked in sequence per touch
+const TOUCH_SOUNDS = [
+
+  // 0 — Shimmer Bed
+  function shimmerBed(ctx, master, reverb, now) {
+    const freqs = [220, 221.5, 330, 440, 441.2];
+    const nodes = freqs.map(f => {
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(0.06, now + 0.8);
+      o.connect(g); g.connect(reverb); o.start();
+      return { o, g };
+    });
+    return () => { nodes.forEach(({o,g}) => {
+      const t = ctx.currentTime;
+      g.gain.linearRampToValueAtTime(0, t + 0.8); o.stop(t + 0.85);
+    }); };
+  },
+
+  // 1 — Void Ping
+  function voidPing(ctx, master, reverb, now) {
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = 440;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.3, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    o.connect(g); g.connect(reverb); o.start(); o.stop(now + 0.15);
+    return () => {};
+  },
+
+  // 2 — Current Tail
+  function currentTail(ctx, master, reverb, now) {
+    const f = 380;
+    [2.0, 3.0].forEach((r, i) => {
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f * r;
+      o.frequency.linearRampToValueAtTime(f * r * 0.85, now + 0.6);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.07, now + i * 0.04);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+      o.connect(g); g.connect(reverb); o.start(); o.stop(now + 0.75);
+    });
+    return () => {};
+  },
+
+  // 3 — Stardust
+  function stardust(ctx, master, reverb, now) {
+    for (let i = 0; i < 8; i++) {
+      const f = 600 + Math.random() * 2000;
+      const delay = Math.random() * 0.3;
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, now + delay);
+      g.gain.linearRampToValueAtTime(0.06, now + delay + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.3);
+      o.connect(g); g.connect(reverb); o.start(now + delay); o.stop(now + delay + 0.35);
+    }
+    return () => {};
+  },
+
+  // 4 — Harmonic Melt
+  function harmonicMelt(ctx, master, reverb, now) {
+    const f = 220;
+    [1, 2, 3, 4, 5].forEach((r, i) => {
+      const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f * r;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.1 - i * 0.015, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 1.5 - i * 0.2);
+      o.connect(g); g.connect(reverb); o.start(); o.stop(now + 1.6);
+    });
+    return () => {};
+  },
+
+  // 5 — Flutter
+  function flutter(ctx, master, reverb, now) {
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = 660;
+    const og = ctx.createGain(); og.gain.setValueAtTime(0.2, now);
+    og.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+    const lfo = ctx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 18;
+    const lg = ctx.createGain(); lg.gain.value = 0.2;
+    lfo.connect(lg); lg.connect(og.gain);
+    o.connect(og); og.connect(reverb);
+    o.start(); lfo.start(); o.stop(now + 1.1); lfo.stop(now + 1.1);
+    return () => {};
+  },
+];
+
+let touchSoundIndex = 0;
+
+function startVoice(pointerId, ny) {
+  if (!audioCtx) return;
+  if (activeVoices.has(pointerId)) return;
+  const ctx = audioCtx;
+  const now = ctx.currentTime;
+  const fn = TOUCH_SOUNDS[touchSoundIndex % TOUCH_SOUNDS.length];
+  touchSoundIndex++;
+  const stopFn = fn(ctx, masterGain, reverbSend, now);
+  activeVoices.set(pointerId, { stopFn });
+}
+
+function updateVoice(pointerId, ny) {}
+
+function stopVoice(pointerId) {
+  if (!audioCtx) return;
+  const v = activeVoices.get(pointerId);
+  if (!v) return;
+  try { v.stopFn && v.stopFn(); } catch(e) {}
+  activeVoices.delete(pointerId);
+}
+
+// Wormhole sound: wind-up during charge, then shockwave boom
+const wormholeWindups = new Map(); // pointerId → nodes
+
+function nyToFreq(ny) {
+  const t = ny + 0.5; // 0=bottom, 1=top
+  return 180 + t * 600;
+}
+
+function startWormholeWindup(pointerId, ny) {
+  if (!audioCtx) return;
+  if (wormholeWindups.has(pointerId)) return;
+  const ctx = audioCtx;
+  const now = ctx.currentTime;
+  const freq = nyToFreq(ny);
+  const dur  = GRAVITY_CHARGE / 60;
+
+  // Sub sine: starts at freq, drops an octave as it charges (sucking in)
+  const sub = ctx.createOscillator();
+  sub.type = 'sine'; sub.frequency.value = freq;
+  sub.frequency.linearRampToValueAtTime(freq * 0.5, now + dur);
+  const sg = ctx.createGain(); sg.gain.setValueAtTime(0, now);
+  sg.gain.linearRampToValueAtTime(0.18, now + 0.3);
+  sub.connect(sg); sg.connect(masterGain); sg.connect(reverbSend);
+  sub.start();
+
+  // Noise band centred on same freq, narrows as it charges
+  const bufLen = ctx.sampleRate * 2;
+  const nb = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+  const nd = nb.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) nd[i] = Math.random() * 2 - 1;
+  const ns = ctx.createBufferSource();
+  ns.buffer = nb; ns.loop = true;
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass'; bp.frequency.value = freq * 2; bp.Q.value = 0.8;
+  bp.Q.linearRampToValueAtTime(3.5, now + dur);
+  const ng = ctx.createGain(); ng.gain.setValueAtTime(0, now);
+  ng.gain.linearRampToValueAtTime(0.10, now + 0.3);
+  ns.connect(bp); bp.connect(ng); ng.connect(reverbSend);
+  ns.start();
+
+  wormholeWindups.set(pointerId, { ns, ng, sub, sg, freq });
+}
+
+function stopWormholeWindup(pointerId) {
+  const w = wormholeWindups.get(pointerId);
+  if (!w || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  w.ng.gain.linearRampToValueAtTime(0, now + 0.1);
+  w.sg.gain.linearRampToValueAtTime(0, now + 0.1);
+  try { w.ns.stop(now + 0.15); } catch(e){}
+  try { w.sub.stop(now + 0.15); } catch(e){}
+  wormholeWindups.delete(pointerId);
+}
+
+let burstSoundIndex = 0;
+
+function playBurstSound(pointerId) {
+  if (!audioCtx) return;
+  stopWormholeWindup(pointerId);
+  const ctx = audioCtx;
+  const now = ctx.currentTime;
+  const fn = TOUCH_SOUNDS[burstSoundIndex % TOUCH_SOUNDS.length];
+  burstSoundIndex++;
+  fn(ctx, masterGain, reverbSend, now);
+}
+
+// ── Active touch points ────────────────────────────────────────────────────
+const activeTouches = new Map(); // pointerId → { nx, ny, mode, frames }
+
+function screenToNorm(cx, cy) {
+  return { nx: cx/innerWidth - 0.5, ny: 0.5 - cy/innerHeight };
+}
+
+renderer.domElement.addEventListener('pointerdown', e => {
+  initAudio();
+  const n = screenToNorm(e.clientX, e.clientY);
+  activeTouches.set(e.pointerId, { ...n, frames: 0 });
+
+  if (currentMode === 'ripple') {
+    ripples.push({ nx: n.nx, ny: n.ny, t: 0 });
+  }
+  if (currentMode === 'gravity') {
+    gravityWells.push({ nx: n.nx, ny: n.ny, frames: 0, burst: false, pointerId: e.pointerId });
+    startWormholeWindup(e.pointerId, n.ny);
+  } else startVoice(e.pointerId, n.ny);
+  document.getElementById('hint').style.opacity = '0';
+});
+
+renderer.domElement.addEventListener('pointermove', e => {
+  if (!activeTouches.has(e.pointerId)) return;
+  const n = screenToNorm(e.clientX, e.clientY);
+  const t = activeTouches.get(e.pointerId);
+  t.nx = n.nx; t.ny = n.ny;
+
+  if (currentMode === 'ripple') {
+    if (t.frames % 12 === 0) ripples.push({ nx: n.nx, ny: n.ny, t: 0 });
+  }
+  updateVoice(e.pointerId, n.ny);
+});
+
+renderer.domElement.addEventListener('pointerup', e => {
+  if (currentMode === 'gravity') stopWormholeWindup(e.pointerId);
+  else stopVoice(e.pointerId);
+  activeTouches.delete(e.pointerId);
+});
+renderer.domElement.addEventListener('pointercancel', e => {
+  if (currentMode === 'gravity') stopWormholeWindup(e.pointerId);
+  else stopVoice(e.pointerId);
+  activeTouches.delete(e.pointerId);
+});
+
+// ── Resize ─────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+// ── Animation ──────────────────────────────────────────────────────────────
+let startupFade = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (startupFade < 1) startupFade = Math.min(1, startupFade + 0.008);
+
+  const vs       = visibleSize();
+  const loopZ    = STREAM_DEPTH;
+  const maxZ     = 60;
+  const spawnZ   = maxZ - loopZ;
+  const fadeStart = -loopZ * 0.55;
+  const fadeSpan  = maxZ - fadeStart;
+  const fadeIn    = loopZ * 0.15;
+  const radius    = AFFECT_RADIUS * vs.w;
+  const mode      = currentMode;
+
+  // Advance touch frame counters
+  activeTouches.forEach(t => t.frames++);
+
+  // Advance ripples
+  for (let r = ripples.length - 1; r >= 0; r--) {
+    ripples[r].t++;
+    if (ripples[r].t > RIPPLE_LIFE) ripples.splice(r, 1);
+  }
+
+  // Advance gravity wells
+  for (let g = gravityWells.length - 1; g >= 0; g--) {
+    const gw = gravityWells[g];
+    gw.frames++;
+    if (gw.frames > GRAVITY_CHARGE && !gw.burst) {
+      gw.burst = true;
+      playBurstSound(gw.pointerId);
+    }
+    if (gw.frames > GRAVITY_CHARGE + GRAVITY_BURST_LIFE) { gravityWells.splice(g, 1); }
+  }
+
+  // Snapshot touches
+  const touches = [...activeTouches.values()];
+
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const i3 = i*3, i4 = i*4;
+
+    // Stream Z
+    let z = positions[i3+2] + SPEED_BASE;
+    if (z > maxZ) z -= loopZ;
+    positions[i3+2] = z;
+
+    let wx = positions[i3];
+    let wy = positions[i3+1];
+    const bwx = baseX[i] * vs.w;
+    const bwy = baseY[i] * vs.h;
+
+    // ── Mode-specific forces ──────────────────────────────────────────────
+
+    if (mode === 'explosion') {
+      for (const t of touches) {
+        const tx = t.nx * vs.w, ty = t.ny * vs.h;
+        const dx = wx - tx, dy = wy - ty;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        if (d < radius && d > 0.001) {
+          const str = (1 - d/radius) * 14.0;
+          velX[i] += (dx/d) * str;
+          velY[i] += (dy/d) * str;
+        }
+      }
+
+    } else if (mode === 'gravity') {
+      for (const gw of gravityWells) {
+        const tx = gw.nx * vs.w, ty = gw.ny * vs.h;
+        const dx = tx - wx, dy = ty - wy;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        const chargeT = Math.min(1, gw.frames / GRAVITY_CHARGE); // 0→1 during wind-up
+
+        if (!gw.burst) {
+          // ── Wormhole tunnel: everything converges on touch point and rushes toward camera ──
+          const pullR = vs.w * GRAVITY_TUNNEL_R * (0.4 + chargeT * 0.6);
+          if (d < pullR && d > 0.001) {
+            // XY: funnel toward touch point — stronger as charge builds and as closer
+            const norm = d / pullR;
+            const falloff = Math.pow(1 - norm, 1.1);
+            const str = falloff * GRAVITY_PULL * (0.3 + chargeT * 0.7);
+            velX[i] += (dx/d) * str;
+            velY[i] += (dy/d) * str;
+            // Mild spin to give it a rotating tunnel look
+            const spin = falloff * GRAVITY_SPIRAL * chargeT;
+            velX[i] += (-dy/d) * spin;
+            velY[i] += ( dx/d) * spin;
+            // Z: rush toward camera — accelerates with charge and proximity to center
+            // Particles far from center move slower; those near center scream forward
+            const zBoost = falloff * GRAVITY_Z_PULL * (0.2 + chargeT * 0.8) * (1 - norm * 0.5);
+            positions[i3+2] += zBoost;
+            // Speed up base stream flow for particles in the funnel
+            positions[i3+2] += chargeT * SPEED_BASE * falloff * 3.0;
+          }
+        } else {
+          // ── Burst: flash everything outward like exiting the wormhole ──
+          const burstAge  = gw.frames - GRAVITY_CHARGE;
+          const burstFrac = burstAge / GRAVITY_BURST_LIFE;
+          const fade      = Math.pow(1 - burstFrac, 1.5);
+          // Radial XY scatter from exit point
+          if (d > 0.001) {
+            const str = fade * GRAVITY_BURST * 0.4;
+            velX[i] -= (dx/d) * str;
+            velY[i] -= (dy/d) * str;
+          }
+          // All particles blast toward camera — the "exit flash"
+          positions[i3+2] += fade * GRAVITY_BURST * 0.8;
+        }
+      }
+
+    } else if (mode === 'ripple') {
+      for (const rip of ripples) {
+        const tx  = rip.nx * vs.w, ty = rip.ny * vs.h;
+        const dx  = wx - tx, dy = wy - ty;
+        const d   = Math.sqrt(dx*dx + dy*dy);
+        // Ring front radius expands over time
+        const ringR   = rip.t * RIPPLE_SPEED * vs.w;
+        const ringW   = RIPPLE_WIDTH * vs.w;
+        const distFromRing = Math.abs(d - ringR);
+        if (distFromRing < ringW && d > 0.001) {
+          const envelope = 1 - distFromRing / ringW;
+          const fade     = Math.max(0, 1 - rip.t / RIPPLE_LIFE);
+          const str = envelope * fade * RIPPLE_FORCE;
+          // Push radially outward from impact center
+          velX[i] += (dx/d) * str;
+          velY[i] += (dy/d) * str;
+          // Small perpendicular shimmer so it looks wave-like
+          velX[i] += (-dy/d) * str * 0.25 * Math.sin(ripplePhase[i] + rip.t * 0.3);
+          velY[i] += ( dx/d) * str * 0.25 * Math.sin(ripplePhase[i] + rip.t * 0.3);
+        }
+      }
+    }
+
+    // Spring return
+    velX[i] += (bwx - wx) * RETURN_FORCE;
+    velY[i] += (bwy - wy) * RETURN_FORCE;
+
+    // Damping
+    velX[i] *= DAMPING;
+    velY[i] *= DAMPING;
+
+    positions[i3]   = wx + velX[i];
+    positions[i3+1] = wy + velY[i];
+
+    // Heat → color blend: only from touch proximity, not velocity
+    let targetHeat = 0;
+    for (const t of touches) {
+      const tx = t.nx * vs.w, ty = t.ny * vs.h;
+      const dx = wx - tx, dy = wy - ty;
+      const d  = Math.sqrt(dx*dx + dy*dy);
+      if (d < radius * 1.5) targetHeat = Math.max(targetHeat, 1 - d / (radius * 1.5));
+    }
+    // Also heat from ripple ring and gravity wells
+    if (mode === 'ripple') {
+      for (const rip of ripples) {
+        const tx = rip.nx * vs.w, ty = rip.ny * vs.h;
+        const dx = wx - tx, dy = wy - ty;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        const ringR = rip.t * RIPPLE_SPEED * vs.w;
+        const ringW = RIPPLE_WIDTH * vs.w * 3;
+        const distFromRing = Math.abs(d - ringR);
+        if (distFromRing < ringW) {
+          const fade = Math.max(0, 1 - rip.t / RIPPLE_LIFE);
+          targetHeat = Math.max(targetHeat, (1 - distFromRing / ringW) * fade);
+        }
+      }
+    }
+    if (mode === 'gravity') {
+      for (const gw of gravityWells) {
+        const tx = gw.nx * vs.w, ty = gw.ny * vs.h;
+        const dx = wx - tx, dy = wy - ty;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        const chargeT = Math.min(1, gw.frames / GRAVITY_CHARGE);
+        // Heat entire funnel — wider as it charges, burst heats everything
+        const heatR = gw.burst
+          ? vs.w * 2.0
+          : vs.w * GRAVITY_TUNNEL_R * (0.4 + chargeT * 0.6) * 1.1;
+        if (d < heatR) {
+          const h = gw.burst
+            ? Math.pow(1 - Math.min(1, d / heatR), 0.5) * (1 - (gw.frames - GRAVITY_CHARGE) / GRAVITY_BURST_LIFE)
+            : (1 - d / heatR) * chargeT;
+          targetHeat = Math.max(targetHeat, h);
+        }
+      }
+    }
+    heat[i] += (targetHeat - heat[i]) * (targetHeat > heat[i] ? 0.3 : 0.06);
+    const h = heat[i];
+    colors[i4]   = iR[i] + (rR[i] - iR[i]) * h;
+    colors[i4+1] = iG[i] + (rG[i] - iG[i]) * h;
+    colors[i4+2] = iB[i] + (rB[i] - iB[i]) * h;
+
+    // Alpha
+    let alpha = 1.0;
+    if (z > fadeStart) alpha = 1.0 - (z - fadeStart) / fadeSpan;
+    if (z < spawnZ + fadeIn) alpha = Math.min(alpha, (z - spawnZ) / fadeIn);
+    colors[i4+3] = Math.max(0, Math.min(1, alpha)) * startupFade;
+  }
+
+  geometry.attributes.position.needsUpdate = true;
+  geometry.attributes.color.needsUpdate    = true;
+  composer.render();
+}
+
+animate();
+</script>
+</body>
+</html>
